@@ -1,1 +1,21 @@
-.pdf
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test/cache files
+.pytest_cache/
+.coverage
+
+# IDE/editor files
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+*.pdf
