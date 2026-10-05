@@ -124,7 +124,7 @@ Fixed random seeds are used so the demonstrations are reproducible.
 The project requires Python 3 and no third-party packages.
 
 ```bash
-git clone https://github.com/USERNAME/REPOSITORY.git
+git clone https://https://github.com/jakobthomassen/ACIT4420_Mandatory_Assignment.git
 cd REPOSITORY
 python3 main.py
 ```
