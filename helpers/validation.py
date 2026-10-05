@@ -1,69 +1,152 @@
-"""Validation helpers for fitness profiles and observations."""
+"""
+Validation of CSV rows: identifiers (regular expressions), types, ranges and signal quality.
+"""
+
+import math
+import re
+
+from helpers.exceptions import InvalidIdentifierError, InvalidRecordError
+
+# Regular expressions are used for identifier formats only (matched with fullmatch).
+PARTICIPANT_ID_PATTERN = re.compile(r"P\d{3}", re.ASCII)
+SESSION_ID_PATTERN = re.compile(r"FIT-\d{4}-\d{3}", re.ASCII)
+
+# Data-quality rule: a window with signal_quality below this value is rejected.
+SIGNAL_QUALITY_THRESHOLD = 0.60
+
+PROFILE_COLUMNS = (
+    "participant_id",
+    "name",
+    "baseline_heart_rate",
+    "baseline_skin_response",
+    "baseline_temperature",
+)
+SESSION_COLUMNS = (
+    "session_id",
+    "participant_id",
+    "timestamp",
+    "heart_rate",
+    "skin_response",
+    "temperature",
+    "activity_level",
+    "signal_quality",
+)
+
+# (minimum, maximum); maximum None means "no upper limit". Plain comparisons, no regex.
+PROFILE_RULES = {
+    "baseline_heart_rate": (35, 205),
+    "baseline_skin_response": (0, None),
+    "baseline_temperature": (25, 42),
+}
+SESSION_RULES = {
+    "heart_rate": (35, 205),
+    "skin_response": (0, None),
+    "temperature": (25, 42),
+    "activity_level": (0, 1),
+    "signal_quality": (0, 1),
+}
 
 
-def validate_profile(profile): # Return a list of problems found in a participant profile
+def validate_participant_id(value):
+    if not PARTICIPANT_ID_PATTERN.fullmatch(value):
+        raise InvalidIdentifierError("participant_id", f"{value!r} does not match P followed by three digits")
+    return value
+
+
+def validate_session_id(value):
+    if not SESSION_ID_PATTERN.fullmatch(value):
+        raise InvalidIdentifierError("session_id", f"{value!r} does not match FIT-YYYY-NNN")
+    return value
+
+
+def is_valid_session_id(value):
+    return SESSION_ID_PATTERN.fullmatch(value) is not None
+
+
+def parse_number(field, text):  # Convert text to a finite float or raise InvalidRecordError
+    try:
+        value = float(text)
+    except ValueError as error:
+        raise InvalidRecordError(field, f"cannot convert {text!r} to a number") from error
+    if not math.isfinite(value):
+        raise InvalidRecordError(field, f"{text!r} is not a finite number")
+    return value
+
+
+def parse_integer(field, text):
+    try:
+        return int(text)
+    except ValueError as error:
+        raise InvalidRecordError(field, f"cannot convert {text!r} to an integer") from error
+
+
+def check_range(field, value, minimum, maximum=None):
+    if maximum is None:
+        if value < minimum:
+            raise InvalidRecordError(field, f"{value:g} is below the minimum of {minimum}")
+    elif not minimum <= value <= maximum:
+        raise InvalidRecordError(field, f"{value:g} is outside the allowed range {minimum} to {maximum}")
+
+
+def _parse_fields(columns, fields, parse_field):
+    # Parse every field and collect all problems, so one bad row can report several fields.
+    values = {}
     problems = []
-    required = (
-        "participant_id",
-        "baseline_heart_rate",
-        "baseline_skin_response",
-        "baseline_temperature",
-    )
-
-    for field in required:
-        if field not in profile or profile[field] is None:
-            problems.append(f"missing {field}")
-
-    if problems:
-        return problems
-
-    if not isinstance(profile["participant_id"], str) or not profile["participant_id"].strip():
-        problems.append("participant_id must be a non-empty string")
-    if not isinstance(profile["baseline_heart_rate"], (int, float)) or not 35 <= profile["baseline_heart_rate"] <= 205:
-        problems.append("baseline_heart_rate must be between 35 and 205")
-    if not isinstance(profile["baseline_skin_response"], (int, float)) or profile["baseline_skin_response"] < 0:
-        problems.append("baseline_skin_response must be 0 or greater")
-    if not isinstance(profile["baseline_temperature"], (int, float)) or not 25 <= profile["baseline_temperature"] <= 42:
-        problems.append("baseline_temperature must be between 25 and 42")
-
-    return problems
+    for name, text in zip(columns, fields):
+        try:
+            values[name] = parse_field(name, text.strip())
+        except (InvalidIdentifierError, InvalidRecordError) as error:
+            problems.append((error.field, error.reason))
+    return values, problems
 
 
-def validate_observation(observation): # Return a list of validation problems for one raw observation
-    problems = []
-    required = (
-        "timestamp",
-        "heart_rate",
-        "skin_response",
-        "temperature",
-        "activity_level",
-        "signal_quality",
-    )
+def _check_row_length(columns, fields):
+    if len(fields) != len(columns):
+        raise InvalidRecordError("row", f"expected {len(columns)} fields but found {len(fields)}")
 
-    for field in required:
-        if field not in observation or observation[field] is None:
-            problems.append(f"missing {field}")
 
-    if "timestamp" in observation and observation["timestamp"] is not None:
-        if not isinstance(observation["timestamp"], int) or observation["timestamp"] < 0:
-            problems.append("timestamp must be an integer of 0 or greater")
+def parse_profile_row(fields):
+    """Return (values, problems) for one participant row. Raises InvalidRecordError for a wrong row length."""
+    _check_row_length(PROFILE_COLUMNS, fields)
 
-    if "heart_rate" in observation and observation["heart_rate"] is not None:
-        if not isinstance(observation["heart_rate"], (int, float)) or not 35 <= observation["heart_rate"] <= 205:
-            problems.append("heart_rate must be between 35 and 205")
+    def parse_field(name, text):
+        if text == "":
+            raise InvalidRecordError(name, "missing value")
+        if name == "participant_id":
+            return validate_participant_id(text)
+        if name == "name":
+            return text
+        value = parse_number(name, text)
+        check_range(name, value, *PROFILE_RULES[name])
+        return value
 
-    if "skin_response" in observation and observation["skin_response"] is not None:
-        if not isinstance(observation["skin_response"], (int, float)) or observation["skin_response"] < 0:
-            problems.append("skin_response must be 0 or greater")
+    return _parse_fields(PROFILE_COLUMNS, fields, parse_field)
 
-    if "temperature" in observation and observation["temperature"] is not None:
-        if not isinstance(observation["temperature"], (int, float)) or not 25 <= observation["temperature"] <= 42:
-            problems.append("temperature must be between 25 and 42")
 
-    for field in ("activity_level", "signal_quality"):
-        if field in observation and observation[field] is not None:
-            value = observation[field]
-            if not isinstance(value, (int, float)) or not 0 <= value <= 1:
-                problems.append(f"{field} must be between 0 and 1")
+def parse_session_row(fields, known_participants):
+    """Return (values, problems) for one session row. Raises InvalidRecordError for a wrong row length."""
+    _check_row_length(SESSION_COLUMNS, fields)
 
-    return problems
+    def parse_field(name, text):
+        if text == "":
+            raise InvalidRecordError(name, "missing value")
+        if name == "session_id":
+            return validate_session_id(text)
+        if name == "participant_id":
+            validate_participant_id(text)
+            if text not in known_participants:
+                raise InvalidRecordError(name, f"unknown participant {text}")
+            return text
+        if name == "timestamp":
+            value = parse_integer(name, text)
+            check_range(name, value, 0)
+            return value
+        value = parse_number(name, text)
+        check_range(name, value, *SESSION_RULES[name])
+        if name == "signal_quality" and value < SIGNAL_QUALITY_THRESHOLD:
+            raise InvalidRecordError(
+                name, f"poor signal quality ({value:.2f} is below {SIGNAL_QUALITY_THRESHOLD:.2f})"
+            )
+        return value
+
+    return _parse_fields(SESSION_COLUMNS, fields, parse_field)
